@@ -428,7 +428,14 @@ class ImageGenerator:
         return self._call_model_openrouter(prompt, reference_images)
     
     def _call_model_openai_image(self, prompt: str, reference_images: List[dict]) -> tuple:
-        """Call the OpenAI Image API with retry logic."""
+        """Call the OpenAI Image API with retry logic.
+
+        Always uses images.generate() — gpt-image-2 generates a NEW image from
+        the prompt. Reference images provide text context embedded in the prompt
+        (via _format_single_section_markdown with include_images=True), so the
+        model understands what figures to incorporate without needing raw image
+        bytes (images.generate does not accept image inputs).
+        """
         logger = logging.getLogger(__name__)
         
         max_retries = 3
@@ -438,27 +445,13 @@ class ImageGenerator:
             try:
                 logger.info(f"Calling OpenAI Image API (attempt {attempt + 1}/{max_retries})...")
                 
-                if reference_images:
-                    # gpt-image-2 uses images.edit for reference-based generation.
-                    # We pass the reference images to the API. 
-                    img_data = [base64.b64decode(img["base64"]) for img in reference_images]
-                    
-                    response = self.client.images.edit(
-                        model=self.model,
-                        image=img_data if len(img_data) > 1 else img_data[0],
-                        prompt=prompt,
-                        n=1,
-                        response_format="b64_json",
-                        size="1024x1024"
-                    )
-                else:
-                    response = self.client.images.generate(
-                        model=self.model,
-                        prompt=prompt,
-                        n=1,
-                        response_format="b64_json",
-                        size="1024x1024"
-                    )
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    n=1,
+                    response_format="b64_json",
+                    size="1024x1024"
+                )
                 
                 if not response or not response.data:
                     error_msg = "OpenAI API returned no data"
