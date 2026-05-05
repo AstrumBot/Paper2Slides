@@ -107,7 +107,7 @@ class ImageGenerator:
                 # Official Gemini API image-capable default
                 self.model = "models/gemini-1.5-flash"
             elif self.provider == "openai-image":
-                self.model = "dall-e-3"
+                self.model = "gpt-image-2"
             else:
                 self.model = "google/gemini-3-pro-image-preview"
         
@@ -148,7 +148,8 @@ class ImageGenerator:
             if not processed_style.valid:
                 raise ValueError(f"Invalid custom style: {processed_style.error}")
         
-        include_images = (self.provider != "openai-image")
+        # OpenAI provider now supports reference images via gpt-image-2 and images.edit
+        include_images = True
         all_sections_md = self._format_sections_markdown(plan, include_images=include_images)
         all_images = self._filter_images(plan.sections, figure_images)
         
@@ -169,8 +170,8 @@ class ImageGenerator:
             sections_md=sections_md,
         )
         
-        # Pass empty images for openai-image provider
-        ref_images = [] if self.provider == "openai-image" else images
+        # Pass images for all providers including openai-image (which now uses images.edit)
+        ref_images = images
         image_data, mime_type = self._call_model(prompt, ref_images)
         return [GeneratedImage(section_id="poster", image_data=image_data, mime_type=mime_type)]
     
@@ -178,7 +179,7 @@ class ImageGenerator:
         """Generate N slide images (slides 1-2 sequential, 3+ parallel)."""
         results = []
         total = len(plan.sections)
-        include_images = (self.provider != "openai-image")
+        include_images = True
         
         # Select layout rules based on style
         if style_name == "custom":
@@ -429,7 +430,6 @@ class ImageGenerator:
     def _call_model_openai_image(self, prompt: str, reference_images: List[dict]) -> tuple:
         """Call the OpenAI Image API with retry logic."""
         logger = logging.getLogger(__name__)
-        # reference_images is accepted but not passed to the API (DALL-E does not support them)
         
         max_retries = 3
         retry_delay = 2  # seconds
@@ -438,13 +438,27 @@ class ImageGenerator:
             try:
                 logger.info(f"Calling OpenAI Image API (attempt {attempt + 1}/{max_retries})...")
                 
-                response = self.client.images.generate(
-                    model=self.model,
-                    prompt=prompt,
-                    n=1,
-                    response_format="b64_json",
-                    size="1024x1024"
-                )
+                if reference_images:
+                    # gpt-image-2 uses images.edit for reference-based generation.
+                    # We pass the reference images to the API. 
+                    img_data = [base64.b64decode(img["base64"]) for img in reference_images]
+                    
+                    response = self.client.images.edit(
+                        model=self.model,
+                        image=img_data if len(img_data) > 1 else img_data[0],
+                        prompt=prompt,
+                        n=1,
+                        response_format="b64_json",
+                        size="1024x1024"
+                    )
+                else:
+                    response = self.client.images.generate(
+                        model=self.model,
+                        prompt=prompt,
+                        n=1,
+                        response_format="b64_json",
+                        size="1024x1024"
+                    )
                 
                 if not response or not response.data:
                     error_msg = "OpenAI API returned no data"
