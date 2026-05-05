@@ -91,7 +91,13 @@ class ImageGenerator:
     ):
         self.provider = (provider or os.getenv("IMAGE_GEN_PROVIDER", "openrouter")).lower()
         self.api_key = api_key or os.getenv("IMAGE_GEN_API_KEY", "")
-        self.base_url = base_url or os.getenv("IMAGE_GEN_BASE_URL", "https://openrouter.ai/api/v1")
+        
+        if self.provider == "openai-image":
+            default_base_url = "https://api.openai.com/v1"
+        else:
+            default_base_url = "https://openrouter.ai/api/v1"
+            
+        self.base_url = base_url or os.getenv("IMAGE_GEN_BASE_URL", default_base_url)
         self.google_api_base_url = (google_api_base_url or os.getenv("GOOGLE_GENAI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")).rstrip("/")
         self.response_mime_type = response_mime_type or os.getenv("IMAGE_GEN_RESPONSE_MIME_TYPE", "text/plain")
         self.model = model or os.getenv("IMAGE_GEN_MODEL")
@@ -100,10 +106,12 @@ class ImageGenerator:
             if self.provider == "google":
                 # Official Gemini API image-capable default
                 self.model = "models/gemini-1.5-flash"
+            elif self.provider == "openai-image":
+                self.model = "dall-e-3"
             else:
                 self.model = "google/gemini-3-pro-image-preview"
         
-        if self.provider == "openrouter":
+        if self.provider in ["openrouter", "openai-image"]:
             self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         elif self.provider == "google":
             self.client = None
@@ -140,7 +148,8 @@ class ImageGenerator:
             if not processed_style.valid:
                 raise ValueError(f"Invalid custom style: {processed_style.error}")
         
-        all_sections_md = self._format_sections_markdown(plan)
+        include_images = (self.provider != "openai-image")
+        all_sections_md = self._format_sections_markdown(plan, include_images=include_images)
         all_images = self._filter_images(plan.sections, figure_images)
         
         if plan.output_type == "poster":
@@ -160,13 +169,16 @@ class ImageGenerator:
             sections_md=sections_md,
         )
         
-        image_data, mime_type = self._call_model(prompt, images)
+        # Pass empty images for openai-image provider
+        ref_images = [] if self.provider == "openai-image" else images
+        image_data, mime_type = self._call_model(prompt, ref_images)
         return [GeneratedImage(section_id="poster", image_data=image_data, mime_type=mime_type)]
     
     def _generate_slides(self, plan, style_name, processed_style: Optional[ProcessedStyle], all_sections_md, figure_images, max_workers: int, save_callback=None) -> List[GeneratedImage]:
         """Generate N slide images (slides 1-2 sequential, 3+ parallel)."""
         results = []
         total = len(plan.sections)
+        include_images = (self.provider != "openai-image")
         
         # Select layout rules based on style
         if style_name == "custom":
@@ -181,7 +193,7 @@ class ImageGenerator:
         # Generate first 2 slides sequentially (slide 1: no ref, slide 2: becomes ref)
         for i in range(min(2, total)):
             section = plan.sections[i]
-            section_md = self._format_single_section_markdown(section, plan)
+            section_md = self._format_single_section_markdown(section, plan, include_images=include_images)
             layout_rule = layouts.get(section.section_type, layouts["content"])
             
             prompt = self._build_slide_prompt(
@@ -193,16 +205,17 @@ class ImageGenerator:
                 context_md=all_sections_md,
             )
             
-            section_images = self._filter_images([section], figure_images)
             reference_images = []
-            if style_ref_image:
-                reference_images.append(style_ref_image)
-            reference_images.extend(section_images)
+            if include_images:
+                section_images = self._filter_images([section], figure_images)
+                if style_ref_image:
+                    reference_images.append(style_ref_image)
+                reference_images.extend(section_images)
             
             image_data, mime_type = self._call_model(prompt, reference_images)
             
             # Save 2nd slide (i=1) as style reference
-            if i == 1:
+            if i == 1 and include_images:
                 style_ref_image = {
                     "figure_id": "Reference Slide",
                     "caption": "STRICTLY MAINTAIN: same background color, same accent color, same font style, same chart/icon style. Keep visual consistency.",
@@ -222,7 +235,7 @@ class ImageGenerator:
             results_dict = {}
             
             def generate_single(i, section):
-                section_md = self._format_single_section_markdown(section, plan)
+                section_md = self._format_single_section_markdown(section, plan, include_images=include_images)
                 layout_rule = layouts.get(section.section_type, layouts["content"])
                 
                 prompt = self._build_slide_prompt(
@@ -234,9 +247,12 @@ class ImageGenerator:
                     context_md=all_sections_md,
                 )
                 
-                section_images = self._filter_images([section], figure_images)
-                reference_images = [style_ref_image] if style_ref_image else []
-                reference_images.extend(section_images)
+                reference_images = []
+                if include_images:
+                    section_images = self._filter_images([section], figure_images)
+                    if style_ref_image:
+                        reference_images.append(style_ref_image)
+                    reference_images.extend(section_images)
                 
                 image_data, mime_type = self._call_model(prompt, reference_images)
                 return i, GeneratedImage(section_id=section.id, image_data=image_data, mime_type=mime_type)
@@ -330,14 +346,14 @@ class ImageGenerator:
         
         return "\n\n".join(parts)
     
-    def _format_sections_markdown(self, plan: ContentPlan) -> str:
+    def _format_sections_markdown(self, plan: ContentPlan, include_images: bool = True) -> str:
         """Format all sections as markdown."""
         parts = []
         for section in plan.sections:
-            parts.append(self._format_single_section_markdown(section, plan))
+            parts.append(self._format_single_section_markdown(section, plan, include_images=include_images))
         return "\n\n---\n\n".join(parts)
     
-    def _format_single_section_markdown(self, section: Section, plan: ContentPlan) -> str:
+    def _format_single_section_markdown(self, section: Section, plan: ContentPlan, include_images: bool = True) -> str:
         """Format a single section as markdown."""
         lines = [f"## {section.title}", "", section.content]
         
@@ -356,7 +372,8 @@ class ImageGenerator:
                 caption = f": {fig.caption}" if fig.caption else ""
                 lines.append("")
                 lines.append(f"**{ref.figure_id}**{focus_str}{caption}")
-                lines.append("[Image attached]")
+                if include_images:
+                    lines.append("[Image attached]")
         
         return "\n".join(lines)
     
@@ -405,7 +422,58 @@ class ImageGenerator:
         """Call image generation provider based on configuration."""
         if self.provider == "google":
             return self._call_model_google(prompt, reference_images)
+        if self.provider == "openai-image":
+            return self._call_model_openai_image(prompt, reference_images)
         return self._call_model_openrouter(prompt, reference_images)
+    
+    def _call_model_openai_image(self, prompt: str, reference_images: List[dict]) -> tuple:
+        """Call the OpenAI Image API with retry logic."""
+        logger = logging.getLogger(__name__)
+        # reference_images is accepted but not passed to the API (DALL-E does not support them)
+        
+        max_retries = 3
+        retry_delay = 2  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Calling OpenAI Image API (attempt {attempt + 1}/{max_retries})...")
+                
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    n=1,
+                    response_format="b64_json",
+                    size="1024x1024"
+                )
+                
+                if not response or not response.data:
+                    error_msg = "OpenAI API returned no data"
+                    logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    raise RuntimeError(error_msg)
+                
+                b64_data = response.data[0].b64_json
+                if b64_data:
+                    logger.info("Image generation successful (OpenAI)")
+                    return base64.b64decode(b64_data), "image/png"
+                
+                error_msg = "Image generation failed - no b64_json in response"
+                logger.warning(f"{error_msg} (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                raise RuntimeError(error_msg)
+                
+            except Exception as e:
+                logger.error(f"Error in OpenAI Image API call (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                raise
+        
+        raise RuntimeError("OpenAI Image generation failed after all retry attempts")
     
     def _call_model_openrouter(self, prompt: str, reference_images: List[dict]) -> tuple:
         """Call the image generation model with retry logic."""

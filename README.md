@@ -293,7 +293,8 @@ outputs/
 - Set `IMAGE_GEN_PROVIDER` in `paper2slides/.env` to choose the backend:
   - `openrouter` (default): uses `IMAGE_GEN_API_KEY`, `IMAGE_GEN_BASE_URL`, and `IMAGE_GEN_MODEL` (default `google/gemini-3-pro-image-preview`)
   - `google`: uses the official Gemini API at `GOOGLE_GENAI_BASE_URL` (default `https://generativelanguage.googleapis.com/v1beta`), `IMAGE_GEN_API_KEY`, `IMAGE_GEN_MODEL` (default `models/gemini-3-pro-image-preview`, must be image-capable), and `IMAGE_GEN_RESPONSE_MIME_TYPE` (default `text/plain`; use text types if your model does not support image responses)
-- Reference figures are sent as inline data when supported (Google) or as `image_url` attachments (OpenRouter).
+  - `openai-image`: uses the OpenAI Image API (DALL-E). Set `IMAGE_GEN_API_KEY`, `IMAGE_GEN_BASE_URL` (default `https://api.openai.com/v1`), and `IMAGE_GEN_MODEL` (default `dall-e-3`). Note: This provider does not support reference images.
+- Reference figures are sent as inline data when supported (Google) or as `image_url` attachments (OpenRouter). For `openai-image`, images are not sent.
 
 ### Image Generation Notes
 
